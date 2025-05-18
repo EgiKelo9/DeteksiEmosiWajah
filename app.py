@@ -2,26 +2,31 @@ import cv2
 import pickle
 import numpy as np
 import streamlit as st
-from ipynb.fs.full.svm_scratch_cv import get_model
 from sklearn.preprocessing import StandardScaler
 from module import preprocess_image, CannyFeatureExtractor, GLCMFeatureExtractor, SVM_Scratch
 
 # Konfigurasi halaman Streamlit
 st.set_page_config(page_title="Deteksi Emosi Wajah", layout="centered")
 
-# @st.cache_resource
-# def load_model():
-#     with open("svm_model.pkl", "rb") as f:
-#         model = SVM_Scratch()
-#         model_data = pickle.load(f)
-#         model.__dict__.update(model_data)
-#     return model
+def load_model():
+    with open("svm_model.pkl", "rb") as f:
+        return pickle.load(f)
+    
+def load_scaler():
+    with open("svm_scaler.pkl", "rb") as f:
+        return pickle.load(f)
+    
+def load_encoder():
+    with open("svm_encoder.pkl", "rb") as f:
+        return pickle.load(f)
 
-# model = load_model()
-model = get_model()
+model = load_model()
+scaler = load_scaler()
+encoder = load_encoder()
 
-print(type(model))
-print(hasattr(model, 'predict'))
+print("Model loaded successfully.")
+print(hasattr(model, 'alphas'))  # → True kalau sudah training
+print(hasattr(model, 'project')) # → True kalau kelas lengkap
 
 # Emoji untuk setiap label emosi
 EMOTION_EMOJI = {
@@ -37,17 +42,22 @@ EMOTION_EMOJI = {
 # CSS untuk styling dan animasi loader
 st.markdown("""
 <style>
+.main .block-container {
+    max-width: 1200px;
+    padding-left: 3rem;
+    padding-right: 3rem;
+}
 .title {
     text-align: center;
     font-size: 40px;
     font-weight: bold;
-    color: #3E64FF;
+    color: #FFF;
     margin-bottom: 0px;
 }
 .subtitle {
     text-align: center;
     font-size: 18px;
-    color: #555;
+    color: #888;
     margin-bottom: 30px;
 }
 .loader {
@@ -62,6 +72,12 @@ st.markdown("""
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+.container-style {
+    padding: 20px;
+    margin-top: 20px;
+    background-color: #111;  /* dark theme */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -84,6 +100,7 @@ def predict_emotion(image):
         # Step 3: Ekstraksi fitur Canny
         canny_extractor = CannyFeatureExtractor()
         canny_features = canny_extractor.extract_features(preprocessed_img)
+        print(f"Canny features shape: {canny_features.shape}, range: {canny_features.min()}-{canny_features.max()}")
         
         # Step 4: Ekstraksi fitur GLCM
         glcm_extractor = GLCMFeatureExtractor()
@@ -94,17 +111,20 @@ def predict_emotion(image):
         for glcm_dict in glcm_features_list:
             glcm_features.extend(list(glcm_dict.values()))
         glcm_features = np.array(glcm_features)
+        print(f"GLCM features shape: {glcm_features.shape}, range: {glcm_features.min()}-{glcm_features.max()}")
         
         # Step 6: Gabungkan semua fitur
         combined_features = np.concatenate([canny_features, glcm_features])
+        print(f"Combined features shape: {combined_features.shape}")
         features = combined_features.reshape(1, -1)
         
         # Step 7: Normalisasi fitur (jika diperlukan)
-        scaler = StandardScaler()
-        features = scaler.fit_transform(features)
+        print(f"Before scaling - features range: {features.min()}-{features.max()}")
+        features = scaler.transform(features)
+        print(f"After scaling - features range: {features.min()}-{features.max()}")
         
         # Step 8: Prediksi dengan model
-        label = model.predict(features)[0]
+        label = model.predict(features)
 
         # Step 9: Menghitung probabilitas jika tersedia
         try:
@@ -144,7 +164,8 @@ uploaded_file = st.file_uploader("Pilih gambar wajah", type=["jpg", "jpeg", "png
 if uploaded_file is not None:
     try:
         # Baca file ke dalam bytes array
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        uploaded_content = uploaded_file.getvalue()
+        file_bytes = np.asarray(bytearray(uploaded_content), dtype=np.uint8)
         
         # Decode gambar
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -155,32 +176,42 @@ if uploaded_file is not None:
         else:
             # Convert BGR to RGB untuk ditampilkan di Streamlit
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            st.image(image_rgb, caption='Gambar yang diunggah', use_container_width=True)
             
-            # Tampilkan animasi loading
-            with st.spinner("Menganalisis emosi..."):
-                # Panggil model deteksi emosi
-                predicted_label, probabilities = predict_emotion(image)
-                
-                # Tampilkan hasil prediksi
-                st.markdown("### Hasil Deteksi Emosi")
-                emoji = EMOTION_EMOJI.get(predicted_label, "")
-                st.success(f"Emosi terdeteksi: {emoji} {predicted_label}")
-                
-                # Persentase keyakinan
-                st.markdown("#### Persentase Keyakinan:")
-                sorted_probs = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
-                for emotion, score in sorted_probs:
-                    emoji = EMOTION_EMOJI.get(emotion, "")
-                    bar_color = "green" if emotion == predicted_label else "blue"
-                    st.markdown(f"""
-                        <div style='margin-bottom:8px'>
-                            <b>{emoji} {emotion}</b>: {round(score * 100, 2)}%
-                            <div style='background:#eee; border-radius:8px; overflow:hidden'>
-                                <div style='width:{score*100:.2f}%; background:{bar_color}; height:12px'></div>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
+            with st.container():
+                col1, col2 = st.columns([1, 1])
+
+                # Kolom kiri untuk gambar kecil
+                with col1:
+                    st.image(image_rgb, caption='Gambar yang diunggah', width=300)
+
+                # Kolom kanan untuk hasil prediksi
+                with col2:
+                    with st.spinner("Menganalisis emosi..."):
+                        # Panggil model deteksi emosi
+                        predicted_label, probabilities = predict_emotion(image)
+                        label_name = encoder.inverse_transform([predicted_label])[0]
+                        
+                        # Tampilkan hasil prediksi
+                        st.markdown("### Hasil Deteksi Emosi")
+                        emoji = EMOTION_EMOJI.get(label_name, "")
+                        st.success(f"Emosi terdeteksi: {emoji} {label_name}")
+                        
+                        # Persentase keyakinan
+                        st.markdown("#### Persentase Keyakinan:")
+                        sorted_probs = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
+                        
+                        for emotion, score in sorted_probs:
+                            label_emotion = encoder.inverse_transform([emotion])[0]
+                            emoji = EMOTION_EMOJI.get(label_emotion, "")
+                            bar_color = "green" if label_emotion == label_name else "blue"
+                            st.markdown(f"""
+                                <div style='margin-bottom:8px'>
+                                    <b>{emoji} {label_emotion}</b>: {score * 100:.2f}%
+                                    <div style='background:#eee; border-radius:8px; overflow:hidden'>
+                                        <div style='width:{score*100:.2f}%; background:{bar_color}; height:12px'></div>
+                                    </div>
+                                </div>
+                            """, unsafe_allow_html=True)
     
     except Exception as e:
         st.error("Terjadi kesalahan saat memproses gambar.")
